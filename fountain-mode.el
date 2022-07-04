@@ -794,7 +794,15 @@ This option does not affect file contents."
   (let ((faceprop (get-char-property (point) 'face)))
     (if (listp faceprop)
         (memq 'fountain-comment faceprop)
-      (eq 'fountain-comment faceprop))))
+      (eq faceprop 'fountain-comment))))
+
+(defsubst fountain-rev-deleted-p ()
+  "Return non-nil if text at point has deleted revision property."
+  (eq (get-text-property (point) 'fountain-rev) 'deleted))
+
+(defsubst fountain-rev-added-p ()
+  "Return non-nil if text at point has added revision property."
+  (eq (get-text-property (point) 'fountain-rev) 'added))
 
 (defun fountain-blank-before-p ()
   "Return non-nil if preceding line is blank or a comment."
@@ -805,7 +813,8 @@ This option does not affect file contents."
       (or (bobp)
           (progn (forward-line -1)
                  (or (and (bolp) (eolp))
-                     (fountain-comment-p)))))))
+                     (fountain-comment-p)
+                     (fountain-rev-deleted-p)))))))
 
 (defun fountain-blank-after-p ()
   "Return non-nil if following line is blank or a comment."
@@ -815,7 +824,8 @@ This option does not affect file contents."
       (forward-line)
       (or (eobp)
           (and (bolp) (eolp))
-          (fountain-comment-p)))))
+          (fountain-comment-p)
+          (fountain-rev-deleted-p)))))
 
 (defun fountain-in-dialog-maybe ()
   "Return non-nil if point may be in dialogue."
@@ -2777,6 +2787,40 @@ The car sets `left-margin' and cdr `fill-column'.")
 The car sets `left-margin' and cdr `fill-column'.")
 
 
+;;; Revision ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; FIXME ...
+
+(defun fountain-compare-buffers (old new)
+  (interactive "bOld buffer: \nbNew buffer: ")
+  (let ((rev-buf (get-buffer-create "*Fountain Revision*"))
+        (old-file (buffer-file-name (get-buffer old)))
+        (new-file (buffer-file-name (get-buffer new)))
+        old-line-length new-line-length)
+    (with-current-buffer old
+      (setq old-line-length (line-number-at-pos (point-max) t)))
+    (with-current-buffer new
+      (setq new-line-length (line-number-at-pos (point-max) t)))
+    (with-current-buffer rev-buf
+      (erase-buffer)
+      (call-process diff-command nil t nil
+                    (format "-TU%d" (max old-line-length new-line-length))
+                    old-file new-file)
+      (goto-char (point-min))
+      (delete-region (point) (re-search-forward "^@@.*@@\n"))
+      (while (re-search-forward "^-\t.*\n?" nil t)
+        (delete-region (match-beginning 0) (match-end 0)))
+      (goto-char (point-min))
+      (while (re-search-forward "^\\(+\t\\)\\(.*\n?\\)" nil t)
+        (highlight-region (match-beginning 2) (match-end 2) 'highlight)
+        (delete-region (match-beginning 1) (match-end 1)))
+      (goto-char (point-min))
+      (while (re-search-forward "^\t" nil t)
+        (delete-region (match-beginning 0) (match-end 0)))
+      (fountain-mode))
+    (switch-to-buffer rev-buf)))
+
+
 ;;; Exporting ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defgroup fountain-export ()
@@ -3117,6 +3161,21 @@ The file is then passed to `dired-guess-default'."
     (unless (stringp command)
       (user-error "%S not configured correctly" 'dired-guess-shell-alist-user))
     (call-process command nil 0 nil file)))
+
+(defun fountain-export-prepare-region (start end)
+  (let ((buffer (current-buffer))
+        (job (make-progress-reporter "Parsing...")))
+    (prog1
+        (with-temp-buffer
+          (insert-buffer-substring buffer start end)
+          (fountain-delete-comments-in-region (point-min) (point-max))
+          (goto-char (point-min))
+          (while (fountain-match-metadata)
+            (forward-line))
+          (delete-region (point-min) (point))
+          (fountain-paginate-buffer)
+          (fountain-parse-region (point-min) (point-max) export-elements job))
+      (progress-reporter-done job))))
 
 
 ;;; Font Lock ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
